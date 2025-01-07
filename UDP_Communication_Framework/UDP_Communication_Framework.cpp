@@ -21,8 +21,8 @@
 #define BUFFERS_LEN 1024
 #define DEFAULT_WINDOW_SIZE 5
 #define SAVEPATH_RECIEVER "recieved_files"; // Ensure this directory exists
-#define FILE_PATH_SENDER "test_files\\tabule.jpg"
-//#define FILE_PATH_SENDER "test_files\\dddddddddddddddddddddddddddddddddddddd.mp4"
+//#define FILE_PATH_SENDER "test_files\\tabule.jpg"
+#define FILE_PATH_SENDER "test_files\\dddddddddddddddddddddddddddddddddddddd.mp4"
 
 #ifdef NDERP_NOT_USED
 

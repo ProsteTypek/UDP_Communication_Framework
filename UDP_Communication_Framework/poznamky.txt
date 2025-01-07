@@ -1,0 +1,24 @@
+
+V tom vytváøení start packetu: Když se ukládá do data a dataLength, tak nemìlo by se to pak zase prohnat pøes funkci hntol? 
+
+Proè je tam po odeslání packetu 500 ms èekání? A pøi pøijetí zase?
+
+Jaký je rozdíl mezi:
+     sendto(socketS, start_buffer, startPacket.dataLength + 12, 0, (sockaddr*)&addrDest, sizeof(addrDest));
+     a
+     sendto(socketS, (char*)&startPacket, sizeof(startPacket), 0, (sockaddr*)&addrDest, sizeof(addrDest));
+
+
+Nechceme pak otestovat i pøenos po síti? Abychom si vyzkoušeli vìtší window size
+
+Nemel bych dal posilat data i bez ohledu na to v jakem jsou okne? Kdybych jakoby porad posilal data dal a akorat zopakoval nejaky packet, kdyby mi od nej neprichazel acknowledge
+
+Neni tam nastaveni window size
+
+V nacitani stop acknowledge packetu neni kontrola toho, ze prisel packet se sequence number 0xFFFFF. Nevadi to?
+
+TODO:
+- prepsat to tak, aby se nemuselo 5x poslat stop... xd
+
+
+Co je to _T makro?

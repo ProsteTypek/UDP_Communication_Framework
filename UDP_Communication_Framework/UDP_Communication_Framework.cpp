@@ -15,6 +15,10 @@
 #include <iomanip>
 #include <stdexcept> // Pro std::runtime_error
 #include <openssl/evp.h> // OpenSSL knihovna
+#include <iterator>
+#include <array>
+#include <numeric>
+#include <set>
 
 
 #define SENDER
@@ -26,6 +30,8 @@
 #define BUFFERS_LEN 1024
 #define DEFAULT_WINDOW_SIZE 5
 #define SAVEPATH_RECIEVER "recieved_files"; // Ensure this directory exists
+//#define FILE_PATH_SENDER "test_files\\cvut_logo_testing_.png"
+#define FILE_PATH_SENDER "test_files\\cat-219662_1280.bmp"
 #define FILE_PATH_SENDER "test_files\\tabule.jpg"
 //#define FILE_PATH_SENDER "test_files\\dddddddddddddddddddddddddddddddddddddd.mp4"
 
@@ -88,6 +94,69 @@ std::string ExtractFileName(const std::string& filePath) {
     return filePath; // If no slash is found, the entire path is the file name
 }
 
+
+template<uint32_t poly>
+struct crc32_table_generator {
+private:
+    template<typename T, bool flag>
+    struct denominator;
+
+    template<typename T>
+    struct denominator<T, true>
+    {
+        static constexpr T value = poly;
+    };
+
+    template<typename T>
+    struct denominator<T, false>
+    {
+        static constexpr T value = 0;
+    };
+
+    template<uint8_t index, uint8_t N = 8>
+    struct crc32_table_elem {
+        static constexpr bool carry =
+            static_cast<bool>(crc32_table_elem<index, N - 1>::value & 0x80000000);
+        static constexpr uint32_t value =
+            (crc32_table_elem<index, N - 1>::value << 1) ^ denominator<uint32_t, carry>::value;
+    };
+
+    template<uint8_t index>
+    struct crc32_table_elem<index, 0> {
+        static constexpr uint32_t value = (index << 24);
+    };
+
+    template<size_t N = 255, uint32_t ...Indices>
+    struct array_impl {
+        static constexpr auto value = array_impl<N - 1, crc32_table_elem<N>::value, Indices...>::value;
+    };
+
+    template<uint32_t ...Indices>
+    struct array_impl<0, Indices...> {
+        static constexpr std::array<uint32_t, sizeof...(Indices) + 1> value
+            = { {crc32_table_elem<0>::value, Indices...} };
+    };
+
+public:
+    static constexpr std::array<uint32_t, 256> value = array_impl<>::value;
+};
+
+
+static const uint32_t IEEE8023_CRC32_POLYNOMIAL = 0x04C11DB7UL;
+
+
+template<uint32_t poly, typename iterator_t>
+static inline uint32_t crc32(uint32_t crc, const iterator_t head, const iterator_t tail)
+{
+    // instantiate crc32 table (compilie-time)
+    static const auto crc32_table = crc32_table_generator<poly>::value;
+
+    // calculate crc32 checksum for each byte
+    return std::accumulate(head, tail, crc, [](const uint32_t& crc, const uint8_t& x) -> uint32_t {
+        return (crc << 8) ^ crc32_table[((crc >> 24) ^ x) & 0xFF];
+        });
+}
+
 std::string calculate_file_hash(const std::string& filePath) {
     EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
     if (mdctx == nullptr) {
@@ -134,43 +203,39 @@ std::string calculate_file_hash(const std::string& filePath) {
     return oss.str();
 }
 
+
+
 uint32_t CalculateCRC(const Packet& packet) {
-    uint32_t crc = 0xFFFFFFFF;
+    // Create a vector containing the data to calculate CRC
+    std::vector<uint8_t> data;
 
-    // sequencenumber CRC
-    const uint32_t sequenceNumberNet = htonl(packet.sequenceNumber);
-    const char* seqBytes = reinterpret_cast<const char*>(&sequenceNumberNet);
-    for (size_t i = 0; i < sizeof(sequenceNumberNet); ++i) {
-        crc ^= static_cast<uint8_t>(seqBytes[i]);
-        for (int j = 0; j < 8; ++j) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : (crc >> 1);
-        }
-    }
+    // Add sequence number (big-endian)
+    uint32_t sequenceNumberNet = htonl(packet.sequenceNumber);
+    uint8_t* seqBytes = reinterpret_cast<uint8_t*>(&sequenceNumberNet);
+    data.insert(data.end(), seqBytes, seqBytes + sizeof(sequenceNumberNet));
 
-    // datalength CRC
-    const uint32_t dataLengthNet = htonl(packet.dataLength);
-    const char* lengthBytes = reinterpret_cast<const char*>(&dataLengthNet);
-    for (size_t i = 0; i < sizeof(dataLengthNet); ++i) {
-        crc ^= static_cast<uint8_t>(lengthBytes[i]);
-        for (int j = 0; j < 8; ++j) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : (crc >> 1);
-        }
-    }
+    // Add data length (big-endian)
+    uint32_t dataLengthNet = htonl(packet.dataLength);
+    uint8_t* lengthBytes = reinterpret_cast<uint8_t*>(&dataLengthNet);
+    data.insert(data.end(), lengthBytes, lengthBytes + sizeof(dataLengthNet));
 
-    // data CRC
-    for (size_t i = 0; i < packet.dataLength; ++i) {
-        crc ^= static_cast<uint8_t>(packet.data[i]);
-        for (int j = 0; j < 8; ++j) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : (crc >> 1);
-        }
-    }
+    // Add actual data
+    data.insert(data.end(), packet.data, packet.data + packet.dataLength);
 
-    return ~crc;
+    // Initial CRC value
+    uint32_t initialCRC = 0xFFFFFFFF;
+
+    // Calculate CRC using the `crc32` function
+    uint32_t crc = crc32<IEEE8023_CRC32_POLYNOMIAL>(initialCRC, data.begin(), data.end());
+
+    // Final XOR
+    return crc ^ 0xFFFFFFFF;
 }
 
 
 
-void SendData(SOCKET socketS, sockaddr_in & addrDest, const std::string & filePath, size_t windowSize) {
+
+void SendData(SOCKET socketS, sockaddr_in& addrDest, const std::string& filePath, size_t windowSize) {
     std::ifstream file(filePath, std::ios::binary);
     std::cout << "file_path: " << filePath << std::endl;
     if (!file.is_open()) {
@@ -269,7 +334,7 @@ void SendData(SOCKET socketS, sockaddr_in & addrDest, const std::string & filePa
             size_t bytesRead = file.read(packet.data, sizeof(packet.data)) ? sizeof(packet.data) : file.gcount();
             packet.dataLength = static_cast<uint32_t>(bytesRead);
 
-			uint32_t crc = CalculateCRC(packet);
+            uint32_t crc = CalculateCRC(packet);
             packet.crc = htonl(crc);
 
             char buffer[BUFFERS_LEN];
@@ -383,6 +448,10 @@ void ReceiveData(SOCKET socketS, sockaddr_in& addrDest) {
     bool receiving = false;
     std::string fileName;
     size_t expectedFileSize = 0;
+    std::vector<char> fileBuffer;  // Declare the buffer outside the if statement
+
+    std::set<uint32_t> receivedSequences;
+    std::set<uint32_t> writtenPackets;
 
     while (true) {
         int bytesReceived = recvfrom(socketS, buffer, BUFFERS_LEN, 0, nullptr, nullptr);
@@ -400,8 +469,9 @@ void ReceiveData(SOCKET socketS, sockaddr_in& addrDest) {
         std::cout << "Received crc" << receivedCRC << std::endl;
         std::cout << "Calculated crc" << calculatedCRC << std::endl;
 
+
         if (receivedCRC == calculatedCRC) {
-            if (strncmp(receivedPacket.data, "START:", 6) == 0) {
+            if (strncmp(receivedPacket.data, "START:", 6) == 0 && !receiving) {
                 std::string startData(receivedPacket.data, receivedPacket.dataLength);
                 size_t firstColon = startData.find(':');
                 size_t secondColon = startData.find(':', firstColon + 1);
@@ -411,6 +481,9 @@ void ReceiveData(SOCKET socketS, sockaddr_in& addrDest) {
 
                 std::string savePath = SAVEPATH_RECIEVER;
                 //outFile.open(savePath + fileName, std::ios::binary | std::ios::out);
+
+                fileBuffer.resize(expectedFileSize, 0);
+
 
                 std::cout << "Receiving state:  " << receiving << std::endl;
                 if (!receiving) {
@@ -427,6 +500,11 @@ void ReceiveData(SOCKET socketS, sockaddr_in& addrDest) {
                     std::cerr << "Error opening file for writing." << std::endl;
 
                 }
+
+                //// Pre-allocate file size
+                //outFile.seekp(expectedFileSize - 1); // Move to the last byte
+                //outFile.write("", 1);               // Write a single byte to allocate space
+                //outFile.seekp(0);                   // Reset to the beginning of the file
 
                 sendto(socketS, "START_ACK", 9, 0, (sockaddr*)&addrDest, sizeof(addrDest));
                 receiving = true;
@@ -446,6 +524,30 @@ void ReceiveData(SOCKET socketS, sockaddr_in& addrDest) {
 
 
             else if (receiving && receivedPacket.dataLength > 0) {
+
+
+
+                uint32_t sequenceNumber = ntohl(receivedPacket.sequenceNumber);
+                size_t offset = sequenceNumber * (BUFFERS_LEN - 12);
+
+                if (writtenPackets.find(sequenceNumber) != writtenPackets.end()) {
+                    std::cout << "Duplicate packet ignored: Seq = " << sequenceNumber << std::endl;
+                    char ackBuffer[7];
+                    memcpy(ackBuffer, "ACK", 3);
+                    uint32_t ackSeqNet = htonl(ntohl(receivedPacket.sequenceNumber));
+                    std::cout << "Recieved packet: " << ntohl(receivedPacket.sequenceNumber) << std::endl;
+                    std::cout << "Receive packet length " << receivedPacket.dataLength << std::endl;
+
+                    memcpy(fileBuffer.data() + offset, receivedPacket.data, receivedPacket.dataLength);
+
+
+                    memcpy(ackBuffer + 3, &ackSeqNet, sizeof(ackSeqNet));
+                    sendto(socketS, ackBuffer, 7, 0, (sockaddr*)&addrDest, sizeof(addrDest));
+                    std::cout << "Acknowledged packet: " << sequenceNumber << std::endl;
+                    continue;
+                }
+
+
                 if (!outFile.is_open()) {
                     std::cout << "Error opening file for writing." << std::endl;
                 }
@@ -454,33 +556,46 @@ void ReceiveData(SOCKET socketS, sockaddr_in& addrDest) {
                     std::cout << "File opened for writing." << std::endl;
                 }
 
+                if (offset + receivedPacket.dataLength > expectedFileSize) {
+                    std::cerr << "Error: Packet offset exceeds allocated file size!" << std::endl;
+                    continue;
+                }
 
-                uint32_t sequenceNumber = ntohl(receivedPacket.sequenceNumber);
+                std::cout << "Packet written: Seq = " << sequenceNumber
+                    << ", Offset = " << offset
+                    << ", Length = " << receivedPacket.dataLength << std::endl;
 
-                outFile.seekp(sequenceNumber * (BUFFERS_LEN - 12));
                 if (!outFile) {
                     std::cerr << "Error: seekp() failed for sequence " << ntohl(receivedPacket.sequenceNumber) << std::endl;
                     std::cerr << "seekp:  " << sequenceNumber * (BUFFERS_LEN - 12) << std::endl;
 
                 }
 
-                if (!outFile.write(receivedPacket.data, receivedPacket.dataLength)) {
+                /*if (!outFile.write(receivedPacket.data, receivedPacket.dataLength)) {
                     std::cerr << "Error writing to file at sequence " << sequenceNumber << std::endl;
 
-                }
+                }*/
+
+
                 if (receivedPacket.dataLength > sizeof(receivedPacket.data)) {
                     std::cerr << "Received packet with invalid data length!" << std::endl;
 
                 }
+
 
                 char ackBuffer[7];
                 memcpy(ackBuffer, "ACK", 3);
                 uint32_t ackSeqNet = htonl(ntohl(receivedPacket.sequenceNumber));
                 std::cout << "Recieved packet: " << ntohl(receivedPacket.sequenceNumber) << std::endl;
                 std::cout << "Receive packet length " << receivedPacket.dataLength << std::endl;
+
+                memcpy(fileBuffer.data() + offset, receivedPacket.data, receivedPacket.dataLength);
+
+
                 memcpy(ackBuffer + 3, &ackSeqNet, sizeof(ackSeqNet));
                 sendto(socketS, ackBuffer, 7, 0, (sockaddr*)&addrDest, sizeof(addrDest));
                 std::cout << "Acknowledged packet: " << sequenceNumber << std::endl;
+                writtenPackets.insert(sequenceNumber);
 
             }
         }
@@ -488,12 +603,28 @@ void ReceiveData(SOCKET socketS, sockaddr_in& addrDest) {
             std::cerr << "CRC mismatch for packet." << std::endl;
         }
     }
+
+    if (fileBuffer.size() != expectedFileSize) {
+        std::cerr << "Error: Buffer size does not match expected file size!" << std::endl;
+    }
+
+
+    if (!outFile.is_open()) {
+        std::cerr << "Error: File not open for writing." << std::endl;
+        return;
+    }
+
+    outFile.write(fileBuffer.data(), fileBuffer.size());
+    if (!outFile) {
+        std::cerr << "Error: Writing to file failed." << std::endl;
+    }
+
     outFile.close();
     std::cerr << "File saved" << std::endl;
 }
 
-
 int main() {
+
     SOCKET socketS;
     InitWinsock();
     struct sockaddr_in local;
@@ -517,7 +648,7 @@ int main() {
     addrDest.sin_family = AF_INET;
     addrDest.sin_port = htons(TARGET_PORT);
     InetPton(AF_INET, _T(TARGET_IP), &addrDest.sin_addr.s_addr);
-    
+
     std::string filePath = FILE_PATH_SENDER;
     size_t windowSize = DEFAULT_WINDOW_SIZE;
     SendData(socketS, addrDest, filePath, windowSize);

@@ -10,6 +10,11 @@
 #include <chrono>
 #include <mutex>
 #include <cstring> // For memcpy
+#include <openssl/ssl.h>
+#include <sstream>
+#include <iomanip>
+#include <stdexcept> // Pro std::runtime_error
+#include <openssl/evp.h> // OpenSSL knihovna
 
 
 #define SENDER
@@ -21,8 +26,8 @@
 #define BUFFERS_LEN 1024
 #define DEFAULT_WINDOW_SIZE 5
 #define SAVEPATH_RECIEVER "recieved_files"; // Ensure this directory exists
-//#define FILE_PATH_SENDER "test_files\\tabule.jpg"
-#define FILE_PATH_SENDER "test_files\\dddddddddddddddddddddddddddddddddddddd.mp4"
+#define FILE_PATH_SENDER "test_files\\tabule.jpg"
+//#define FILE_PATH_SENDER "test_files\\dddddddddddddddddddddddddddddddddddddd.mp4"
 
 #ifdef NDERP_NOT_USED
 
@@ -81,6 +86,52 @@ std::string ExtractFileName(const std::string& filePath) {
         return filePath.substr(lastSlash + 1);
     }
     return filePath; // If no slash is found, the entire path is the file name
+}
+
+std::string calculate_file_hash(const std::string& filePath) {
+    EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
+    if (mdctx == nullptr) {
+        throw std::runtime_error("Failed to create EVP_MD_CTX");
+    }
+
+    if (EVP_DigestInit_ex(mdctx, EVP_md5(), nullptr) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        throw std::runtime_error("Failed to initialize MD5 digest\n");
+    }
+
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file.is_open()) {
+        EVP_MD_CTX_free(mdctx);
+        throw std::runtime_error("Failed to open file\n");
+    }
+
+    char buffer[4096];
+    while (file.read(buffer, sizeof(buffer))) {
+        if (EVP_DigestUpdate(mdctx, buffer, file.gcount()) != 1) {
+            EVP_MD_CTX_free(mdctx);
+            throw std::runtime_error("Failed to update MD5 digest\n");
+        }
+    }
+
+    if (file.gcount() > 0) {
+        EVP_DigestUpdate(mdctx, buffer, file.gcount());
+    }
+
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int length;
+    if (EVP_DigestFinal_ex(mdctx, hash, &length) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        throw std::runtime_error("Failed to finalize MD5 digest\n");
+    }
+
+    EVP_MD_CTX_free(mdctx);
+
+    std::ostringstream oss;
+    for (unsigned int i = 0; i < length; ++i) {
+        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+    }
+
+    return oss.str();
 }
 
 uint32_t CalculateCRC(const Packet& packet) {
